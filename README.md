@@ -1,3 +1,5 @@
+This is extended version of locker.js; original README is below
+
 locker - lock server written in node.js
 ===========================
 
