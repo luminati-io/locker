@@ -1,5 +1,6 @@
 (function(module) {
     var net              = require("net"),
+        fs               = require("fs"),
         Lock             = require("./lib/Lock"),
         LockQueueManager = require("./lib/LockQueueManager"),
         LockAction       = require("./lib/LockAction");
@@ -14,19 +15,23 @@
 	return conn.remoteAddress+':'+conn.remotePort;
     }
 
-    function Locker() {
+    function Locker(opt) {
         var manager = new LockQueueManager();
 	this.conns = {};
+        this.opt = opt||{};
 	var _this = this;
 
         this.server = net.createServer(function(connection) {
 
             var locksRegistry   = {},
 		conn_name = connName(connection),
-                currentSequence = 0,
                 data            = new Buffer(0),
                 temp            = new Buffer(0);
-	    _this.conns[conn_name] = locksRegistry;
+	    _this.conns[conn_name] = {
+                locksRegistry,
+                ip: connection.remoteAddress,
+                pid: 0,
+            }
 	    var closing = false;
 
             connection.on("error", function(error) {
@@ -34,18 +39,21 @@
 		closing = true;
                 releaseLocks(locksRegistry);
 		delete _this.conns[conn_name];
+                _this.save();
             });
 
             connection.on("end", function() {
 		closing = true;
                 releaseLocks(locksRegistry);
 		delete _this.conns[conn_name];
+                _this.save();
             });
 
             connection.on("timeout", function() {
 		closing = true;
                 releaseLocks(locksRegistry);
 		delete _this.conns[conn_name];
+                _this.save();
             });
 
             connection.on("data", function(part) {
@@ -70,29 +78,49 @@
                     action   = data[13];
                     name     = data.slice(14, length + 14).toString();
 
-                    currentSequence = sequence;
-
-                    if (action == LockAction.ACTION_LOCK) {
+                    switch (action) {
+                    case LockAction.ACTION_INIT:
+                        _this.conns[conn_name].pid = sequence;
+                        break;
+                    case LockAction.ACTION_CONT:
+                        var db = _this.load(connection.remoteAddress, sequence);
+                        if (db)
+                            db.forEach(l=>lock(l.name, l.sequence, l.wait, l.timeout, {skip_respond: true}));
+                        break;
+                    case LockAction.ACTION_LOCK:
                         lock(name, sequence, wait, timeout);
-                    } else if (action == LockAction.ACTION_UNLOCK) {
+                        break;
+                    case LockAction.ACTION_UNLOCK:
+                        console.log('unlocking');
                         unlock(sequence);
+                        break;
                     }
+                    _this.save();
 
                     data = data.slice(length + 14);
                 }
             });
 
-            function lock(name, sequence, wait, timeout) {
+            function lock(name, sequence, wait, timeout, opt) {
                 var lock = new Lock(name, manager);
+                var opt = opt||{};
 
-                locksRegistry[sequence] = {lock: lock, request: Date.now()};
+                locksRegistry[sequence] = {
+                    lock: lock,
+                    name: name,
+                    sequence: sequence,
+                    wait: wait,
+                    timeout: timeout,
+                    request: Date.now(),
+                };
 
                 lock.acquire(wait, timeout, function(error) {
 		    if (error)
 			locksRegistry[sequence].error = error;
 		    else
 			locksRegistry[sequence].acquired = Date.now();
-                    respond(sequence, LockAction.ACTION_LOCK, error ? 0 : 1);
+                    if (!opt.skip_respond)
+                        respond(sequence, LockAction.ACTION_LOCK, error ? 0 : 1);
                 });
             };
 
@@ -130,7 +158,7 @@
 	var stat = {};
 	var _this = this;
 	Object.keys(this.conns).forEach(function(c){
-	    var registry = _this.conns[c];
+	    var registry = _this.conns[c].locksRegistry;
 	    stat[c] = Object.keys(registry).map(function(key){
 		var _lock = registry[key];
 		var res = {lock: _lock.lock.getName(),
@@ -147,6 +175,49 @@
 
     Locker.prototype.close = function() {
         this.server.close.apply(this.server, arguments);
+    };
+
+    Locker.prototype.load = function(ip, pid) {
+        if (!this.opt.dbfile || !pid)
+            return;
+        var db = JSON.parse(fs.readFileSync(this.opt.dbfile).toString());
+        var locks = db[ip+'/'+pid];
+        if (!locks)
+            return;
+        var now = Date.now();
+        return locks.map(l=>{
+            l.wait = now-(l.request+l.wait);
+            l.timeout = now-(l.request+l.timeout);
+            if (l.wait<0)
+                l.wait = 0;
+            if (l.timeout<0)
+                l.timeout = 0;
+            return l;
+        });
+    }
+
+    Locker.prototype.save = function() {
+        if (!this.opt.dbfile)
+            return;
+        var db = {};
+	var _this = this;
+        Object.keys(this.conns).forEach(function(c){
+            var key = _this.conns[c].ip+'/'+_this.conns[c].pid;
+	    var registry = _this.conns[c].locksRegistry;
+            db[key] = Object.keys(registry).map(k=>{
+                var _lock = registry[k];
+                var res = {
+                    name: _lock.name,
+                    sequence: _lock.sequence,
+                    wait: _lock.wait,
+                    timeout: _lock.timeout,
+                    request: _lock.request,
+                };
+                return res;
+            });
+        });
+        console.log('Saving:\n'+JSON.stringify(db)+'\n\n');
+        fs.writeFileSync(this.opt.dbfile, JSON.stringify(db));
     };
 
     module.exports = Locker;
