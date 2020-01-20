@@ -20,7 +20,12 @@
 	this.conns = {};
         this.opt = opt||{};
 	var _this = this;
-
+        if (opt.dbfile)
+        {
+            try {
+                this.db = JSON.parse(fs.readFileSync(opt.dbfile).toString());
+            } catch(e) { this.db = undefined; }
+        }
         this.server = net.createServer(function(connection) {
 
             var locksRegistry   = {},
@@ -185,10 +190,9 @@
     };
 
     Locker.prototype.load = function(ip, pid) {
-        if (!this.opt.dbfile || !pid)
+        if (!this.db || !pid)
             return;
-        var db = JSON.parse(fs.readFileSync(this.opt.dbfile).toString());
-        var locks = db[ip+'/'+pid];
+        var locks = this.db[ip+'/'+pid];
         if (!locks)
             return;
         var now = Date.now();
