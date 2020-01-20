@@ -83,15 +83,22 @@
                         _this.conns[conn_name].pid = sequence;
                         break;
                     case LockAction.ACTION_CONT:
+                        _this.conns[conn_name].pid = sequence;
                         var db = _this.load(connection.remoteAddress, sequence);
                         if (db)
-                            db.forEach(l=>lock(l.name, l.sequence, l.wait, l.timeout, {skip_respond: true}));
+                        {
+                            let acquired = db.filter(l=>!!l.acquired);
+                            let waiting = db.filter(l=>!l.acquired);
+                            for (let l of acquired)
+                                lock(l.name, l.sequence, l.wait, l.timeout, {skip_respond: true});
+                            for (let l of waiting)
+                                lock(l.name, l.sequence, l.wait, l.timeout);
+                        }
                         break;
                     case LockAction.ACTION_LOCK:
                         lock(name, sequence, wait, timeout);
                         break;
                     case LockAction.ACTION_UNLOCK:
-                        console.log('unlocking');
                         unlock(sequence);
                         break;
                     }
@@ -186,8 +193,8 @@
             return;
         var now = Date.now();
         return locks.map(l=>{
-            l.wait = now-(l.request+l.wait);
-            l.timeout = now-(l.request+l.timeout);
+            l.wait = (l.request+l.wait)-now;
+            l.timeout = (l.request+l.timeout)-now;
             if (l.wait<0)
                 l.wait = 0;
             if (l.timeout<0)
@@ -212,6 +219,7 @@
                     wait: _lock.wait,
                     timeout: _lock.timeout,
                     request: _lock.request,
+                    acquired: _lock.acquired,
                 };
                 return res;
             });
