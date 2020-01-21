@@ -215,7 +215,7 @@
         Object.keys(this.conns).forEach(function(c){
             var key = _this.conns[c].ip+'/'+_this.conns[c].pid;
 	    var registry = _this.conns[c].locksRegistry;
-            db[key] = Object.keys(registry).map(k=>{
+            db[key] = Object.keys(registry).filter(k=>!registry[k].error).map(k=>{
                 var _lock = registry[k];
                 var res = {
                     name: _lock.name,
